@@ -76,6 +76,8 @@ The SCT-013 outputs an AC signal that the STM32 ADC cannot read directly. The co
 
 STM32CubeIDE · Embedded C (STM32 HAL, register-level configuration where needed) · Git
 
----
+## Team
 
-*Built and maintained by [Parshwa Sangame](https://github.com/YOUR-USERNAME) — final-year Electronics Engineering, Bengaluru. Part of a broader interest in affordable industrial hardware for Indian SMEs — see my [sector research](https://github.com/YOUR-USERNAME/india-hardware-opportunities).*
+Built by a 4-member team — final-year Electronics Engineering, Bangalore Institute of Technology.
+
+This repo is maintained by [Parshwa Sangame](https://github.com/YOUR-USERNAME) — my focus areas in the project: sensor integration and bring-up (ADXL345/I2C), the current-sensing analog front end, debugging, and component sourcing/BOM. Part of a broader interest in affordable industrial hardware for Indian SMEs — see my [sector research](https://github.com/YOUR-USERNAME/india-hardware-opportunities).
