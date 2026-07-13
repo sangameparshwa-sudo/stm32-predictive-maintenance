@@ -78,6 +78,11 @@ STM32CubeIDE · Embedded C (STM32 HAL, register-level configuration where needed
 
 ## Team
 
-Built by a 4-member team — final-year Electronics Engineering, Bangalore Institute of Technology.
+Built by a 4-member team — final-year Electronics Engineering, Bangalore Institute of Technology:
+
+- **Parshwa Sangame**
+- **Siddharth N**
+- **Sumit Sungar**
+- **Sugreshwara H**
 
 This repo is maintained by [Parshwa Sangame](https://github.com/YOUR-USERNAME) — my focus areas in the project: sensor integration and bring-up (ADXL345/I2C), the current-sensing analog front end, debugging, and component sourcing/BOM. Part of a broader interest in affordable industrial hardware for Indian SMEs — see my [sector research](https://github.com/YOUR-USERNAME/india-hardware-opportunities).
