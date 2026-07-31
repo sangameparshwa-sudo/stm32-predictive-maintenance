@@ -1,4 +1,4 @@
-![Uploading Screenshot 2026-07-31 213102.png…]()
+
 # Industrial Motor Condition-Monitoring & Predictive Maintenance System
 
 Multi-sensor system on STM32 to detect early mechanical fault signatures in industrial motors — before failure, not after.
@@ -59,7 +59,9 @@ The SCT-013-030 outputs an AC voltage proportional to primary load current (1V R
 ---
 
 ## What's validated so far
-
+![Live sensor readings — current, acoustic, and vibration active simultaneously](docs/live-re<img width="780" height="542" alt="Screenshot 2026-07-31 213102" src="https://github.com/user-attachments/assets/3aec130d-0ad8-47a8-b120-5e559653862a" />
+<img width="591" height="383" alt="Screenshot 2026-07-31 205948" src="https://github.com/user-attachments/assets/0a32bec4-cac5-44df-8ec4-c5e8c8e321dc" />
+adings.png)
 - **Current Pipeline (SCT-013):** Analog front-end built; bare-metal ADC1 sampling; true-RMS extraction verified live via debugger memory inspection. Reads ~0 idle, sane current under load.
 - **Acoustic Pipeline (MAX4466):** Added as a second ADC channel; same sum-of-squares RMS yields a relative loudness feature that responds to sound in real time.
 - **Vibration Pipeline (ADXL345):** Bare-metal SPI (Mode 3, software chip-select). Bring-up verifies the DEVID register (0xE5) before trusting data; reads signed 16-bit X/Y/Z and computes a gravity-independent vibration-energy feature (RMS of acceleration-magnitude fluctuation).
