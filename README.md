@@ -1,3 +1,4 @@
+![Uploading Screenshot 2026-07-31 213102.png…]()
 # Industrial Motor Condition-Monitoring & Predictive Maintenance System
 
 Multi-sensor system on STM32 to detect early mechanical fault signatures in industrial motors — before failure, not after.
