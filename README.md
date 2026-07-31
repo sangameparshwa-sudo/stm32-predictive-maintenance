@@ -82,18 +82,6 @@ The SCT-013-030 outputs an AC voltage proportional to primary load current (1V R
 
 ---
 
-## Repo layout
-
-```
-├── Core/                STM32CubeIDE project source (main, drivers, config)
-├── docs/
-│   ├── debug-log.md     Problems hit and how they were resolved
-│   └── wiring.md        Sensor wiring and front-end notes
-└── data/                Sample captured sensor data
-```
-
----
-
 ## Tools
 
 STM32 Nucleo-F446RE · Embedded C (bare-metal, register-level) · STM32CubeIDE · SPI · I2C · ADC (multi-channel) · analog signal conditioning · Git
