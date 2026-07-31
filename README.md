@@ -59,8 +59,24 @@ The SCT-013-030 outputs an AC voltage proportional to primary load current (1V R
 ---
 
 ## What's validated so far
-![Live sensor readings — current, acoustic, and vibration active simultaneously](docs/live-re<img width="780" height="542" alt="Screenshot 2026-07-31 213102" src="https://github.com/user-attachments/assets/3aec130d-0ad8-47a8-b120-5e559653862a" />
-<img width="591" height="383" alt="Screenshot 2026-07-31 205948" src="https://github.com/user-attachments/assets/0a32bec4-cac5-44df-8ec4-c5e8c8e321dc" />
+
+<p align="center">
+  <img width="780" alt="Live sensor readings — current, acoustic, and vibration active simultaneously" src="https://github.com/user-attachments/assets/3aec130d-0ad8-47a8-b120-5e559653862a" />
+  <br>
+  <em>Three sensor pipelines reporting live and simultaneously — current (idle), acoustic RMS, and vibration RMS.</em>
+</p>
+
+<p align="center">
+  <img width="591" alt="Live acceleration and vibration RMS from the ADXL345 over SPI" src="https://github.com/user-attachments/assets/0a32bec4-cac5-44df-8ec4-c5e8c8e321dc" />
+  <br>
+  <em>ADXL345 vibration pipeline: live signed Z-axis acceleration and computed vibration-energy RMS.</em>
+</p>
+
+- **Current Pipeline (SCT-013):** Analog front-end built; bare-metal ADC1 sampling; true-RMS extraction verified live via debugger memory inspection. Reads ~0 idle, sane current under load.
+- **Acoustic Pipeline (MAX4466):** Added as a second ADC channel; same sum-of-squares RMS yields a relative loudness feature that responds to sound in real time.
+- **Vibration Pipeline (ADXL345):** Bare-metal SPI (Mode 3, software chip-select). Bring-up verifies the DEVID register (0xE5) before trusting data; reads signed 16-bit X/Y/Z and computes a gravity-independent vibration-energy feature (RMS of acceleration-magnitude fluctuation).
+- **Bus Resilience:** Bare-metal I2C driver written with bounded timeouts so a flaky sensor connection flags an error instead of hanging the whole node — one dead sensor can't freeze the others.
+- **Live Telemetry:** Streaming raw ADC, RMS features, and per-axis acceleration to the debugger's live memory inspection interface.
 
 - **Current Pipeline (SCT-013):** Analog front-end built; bare-metal ADC1 sampling; true-RMS extraction verified live via debugger memory inspection. Reads ~0 idle, sane current under load.
 - **Acoustic Pipeline (MAX4466):** Added as a second ADC channel; same sum-of-squares RMS yields a relative loudness feature that responds to sound in real time.
