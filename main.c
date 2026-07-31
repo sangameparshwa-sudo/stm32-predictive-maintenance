@@ -1,231 +1,353 @@
 #include <stdint.h>
+#include <math.h>
 
 // ============================================================================
-// REGISTERS & MEMORY MAP
+// REGISTERS & MEMORY MAP (STM32F446RE)
 // ============================================================================
 
-// Base Addresses
 #define PERIPH_BASE         ((uint32_t)0x40000000)
 #define AHB1PERIPH_BASE     (PERIPH_BASE + 0x00020000)
 #define APB1PERIPH_BASE     (PERIPH_BASE + 0x00000000)
+#define APB2PERIPH_BASE     (PERIPH_BASE + 0x00010000)
 
-// Reset and Clock Control (RCC)
+// RCC
 #define RCC_BASE            (AHB1PERIPH_BASE + 0x00003800)
 #define RCC_AHB1ENR         (*(volatile uint32_t *)(RCC_BASE + 0x30))
 #define RCC_APB1ENR         (*(volatile uint32_t *)(RCC_BASE + 0x40))
+#define RCC_APB2ENR         (*(volatile uint32_t *)(RCC_BASE + 0x44))
 
-// GPIO Port A (For User LED LD2 on PA5)
+// GPIOA (PA0=SCT ch0, PA1=MIC ch1, PA4=ADXL CS, PA5=SCK, PA6=MISO, PA7=MOSI)
 #define GPIOA_BASE          (AHB1PERIPH_BASE + 0x00000000)
 #define GPIOA_MODER         (*(volatile uint32_t *)(GPIOA_BASE + 0x00))
+#define GPIOA_OTYPER        (*(volatile uint32_t *)(GPIOA_BASE + 0x04))
+#define GPIOA_OSPEEDR       (*(volatile uint32_t *)(GPIOA_BASE + 0x08))
+#define GPIOA_PUPDR         (*(volatile uint32_t *)(GPIOA_BASE + 0x0C))
 #define GPIOA_ODR           (*(volatile uint32_t *)(GPIOA_BASE + 0x14))
+#define GPIOA_AFRL          (*(volatile uint32_t *)(GPIOA_BASE + 0x20))  // AF for pins 0-7
 
-// GPIO Port B (For I2C1 Pins: PB8 = SCL, PB9 = SDA)
+// GPIOB (PB0 = heartbeat LED, PB8 = I2C1_SCL, PB9 = I2C1_SDA)
 #define GPIOB_BASE          (AHB1PERIPH_BASE + 0x00000400)
 #define GPIOB_MODER         (*(volatile uint32_t *)(GPIOB_BASE + 0x00))
 #define GPIOB_OTYPER        (*(volatile uint32_t *)(GPIOB_BASE + 0x04))
+#define GPIOB_OSPEEDR       (*(volatile uint32_t *)(GPIOB_BASE + 0x08))
 #define GPIOB_PUPDR         (*(volatile uint32_t *)(GPIOB_BASE + 0x0C))
+#define GPIOB_ODR           (*(volatile uint32_t *)(GPIOB_BASE + 0x14))
 #define GPIOB_AFRH          (*(volatile uint32_t *)(GPIOB_BASE + 0x24))
 
-// I2C1 Peripherals
+// ADC1
+#define ADC1_BASE           (APB2PERIPH_BASE + 0x00002000)
+#define ADC_SR              (*(volatile uint32_t *)(ADC1_BASE + 0x00))
+#define ADC_CR2             (*(volatile uint32_t *)(ADC1_BASE + 0x08))
+#define ADC_SMPR2           (*(volatile uint32_t *)(ADC1_BASE + 0x10))
+#define ADC_SQR3            (*(volatile uint32_t *)(ADC1_BASE + 0x34))
+#define ADC_DR              (*(volatile uint32_t *)(ADC1_BASE + 0x4C))
+
+// I2C1
 #define I2C1_BASE           (APB1PERIPH_BASE + 0x00005400)
-#define I2C1_CR1            (*(volatile uint32_t *)(I2C1_BASE + 0x00))
-#define I2C1_CR2            (*(volatile uint32_t *)(I2C1_BASE + 0x04))
-#define I2C1_DR             (*(volatile uint32_t *)(I2C1_BASE + 0x10))
-#define I2C1_SR1            (*(volatile uint32_t *)(I2C1_BASE + 0x14))
-#define I2C1_SR2            (*(volatile uint32_t *)(I2C1_BASE + 0x18))
-#define I2C1_CCR            (*(volatile uint32_t *)(I2C1_BASE + 0x1C))
-#define I2C1_TRISE          (*(volatile uint32_t *)(I2C1_BASE + 0x20))
+#define I2C_CR1             (*(volatile uint32_t *)(I2C1_BASE + 0x00))
+#define I2C_CR2             (*(volatile uint32_t *)(I2C1_BASE + 0x04))
+#define I2C_DR              (*(volatile uint32_t *)(I2C1_BASE + 0x10))
+#define I2C_SR1             (*(volatile uint32_t *)(I2C1_BASE + 0x14))
+#define I2C_SR2             (*(volatile uint32_t *)(I2C1_BASE + 0x18))
+#define I2C_CCR             (*(volatile uint32_t *)(I2C1_BASE + 0x1C))
+#define I2C_TRISE           (*(volatile uint32_t *)(I2C1_BASE + 0x20))
 
-// ADXL345 I2C Target Parameters (SDO grounded = 0x53)
-#define ADXL_DEV_ADDR       0x53
-#define ADXL_REG_DEVID      0x00
-#define ADXL_REG_POWER_CTL  0x2D
-#define ADXL_REG_DATAX0     0x32
+// SPI1 (on APB2)
+#define SPI1_BASE           (APB2PERIPH_BASE + 0x00003000)
+#define SPI_CR1             (*(volatile uint32_t *)(SPI1_BASE + 0x00))
+#define SPI_SR              (*(volatile uint32_t *)(SPI1_BASE + 0x08))
+#define SPI_DR              (*(volatile uint32_t *)(SPI1_BASE + 0x0C))
 
-// Global variables to store live axis readings for the debugger expressions view
-volatile int16_t x_axis = 0;
-volatile int16_t y_axis = 0;
-volatile int16_t z_axis = 0;
-volatile uint8_t device_id = 0;
+#define SAMPLES     800
+#define MIC_SAMPLES 2000
+#define VIB_SAMPLES 256        // vibration burst for RMS
+#define MLX_ADDR    0x5A
+#define MLX_TOBJ1   0x07
+
+// ADXL345 registers
+#define ADXL_DEVID       0x00   // reads 0xE5
+#define ADXL_POWER_CTL   0x2D
+#define ADXL_DATA_FORMAT 0x31
+#define ADXL_DATAX0      0x32
+
+// ADXL345 SPI address-byte bits
+#define ADXL_READ  0x80
+#define ADXL_MB    0x40   // multi-byte auto-increment
 
 // ============================================================================
-// BOOT VECTOR SYSTEM TABLE
+// GLOBALS (watch these in Live Expressions)
 // ============================================================================
+volatile uint32_t raw_adc = 0;
+volatile float    dc_offset = 0.0f;
+volatile float    rms_counts = 0.0f;
+volatile float    current_rms = 0.0f;
 
+volatile uint16_t mlx_raw = 0;
+volatile float    object_temp_c = 0.0f;
+volatile int      mlx_error = 0;
+
+volatile float    mic_dc_offset = 0.0f;
+volatile float    acoustic_rms = 0.0f;
+
+volatile uint8_t  adxl_devid = 0;      // MUST read 0xE5 (229). This is your test.
+volatile int16_t  accel_x = 0, accel_y = 0, accel_z = 0;
+volatile float    vibration_rms = 0.0f; // RMS of acceleration magnitude (fault feature)
+
+// ============================================================================
+// VECTOR TABLE
+// ============================================================================
 int main(void);
 void Reset_Handler(void);
+void Default_Handler(void) { while(1); }
 
 __attribute__((section(".isr_vector"), used))
 const uint32_t g_pfnVectors[] = {
-    0x20020000,                    // 1. Initial Stack Pointer (Top of 128KB SRAM)
-    (uint32_t)&Reset_Handler,      // 2. Reset Vector Address
+    0x2001C000,
+    (uint32_t)&Reset_Handler,
+    (uint32_t)&Default_Handler, (uint32_t)&Default_Handler,
+    (uint32_t)&Default_Handler, (uint32_t)&Default_Handler,
+    (uint32_t)&Default_Handler,
+    0, 0, 0, 0,
+    (uint32_t)&Default_Handler, (uint32_t)&Default_Handler,
+    0,
+    (uint32_t)&Default_Handler, (uint32_t)&Default_Handler
 };
 
-void Reset_Handler(void) {
-    main();
-}
+void Reset_Handler(void) { main(); }
 
-// Software blocking delay loop
-void delay(volatile uint32_t count) {
-    while(count--) {
-        __asm("nop");
-    }
-}
+int _close(int f){return -1;} int _lseek(int f,int p,int d){return 0;}
+int _read(int f,char*p,int l){return 0;} int _write(int f,char*p,int l){return l;}
 
-// System low-level stubs to keep standard compiler satisfied
-int _close(int file) { return -1; }
-int _lseek(int file, int ptr, int dir) { return 0; }
-int _read(int file, char *ptr, int len) { return 0; }
-int _write(int file, char *ptr, int len) { return len; }
+void delay(volatile uint32_t count) { while(count--) { __asm("nop"); } }
 
 // ============================================================================
-// BARE-METAL I2C DRIVER ENGINE
+// ADC1 DRIVER  (SCT ch0/PA0, MIC ch1/PA1)
 // ============================================================================
-
-void I2C1_Init(void) {
-    // 1. Enable AHB1/APB1 clocks for GPIOB and I2C1 blocks
-    RCC_AHB1ENR |= (1 << 1);  // Enable GPIOB Clock
-    RCC_APB1ENR |= (1 << 21); // Enable I2C1 Clock
-
-    // 2. Configure PB8 (SCL) and PB9 (SDA) to Alternate Function Mode (10)
-    GPIOB_MODER &= ~((3 << (8 * 2)) | (3 << (9 * 2)));
-    GPIOB_MODER |=  ((2 << (8 * 2)) | (2 << (9 * 2)));
-
-    // 3. Set Pins to Open-Drain (Mandatory requirement for I2C bus physical layers)
-    GPIOB_OTYPER |= (1 << 8) | (1 << 9);
-
-    // 4. Enable Pull-Up Resistors for safety (01)
-    GPIOB_PUPDR &= ~((3 << (8 * 2)) | (3 << (9 * 2)));
-    GPIOB_PUPDR |=  ((1 << (8 * 2)) | (1 << (9 * 2)));
-
-    // 5. Map PB8 and PB9 to Alternate Function 4 (AF4 = I2C1) inside high register
-    GPIOB_AFRH &= ~((15 << ((8 - 8) * 4)) | (15 << ((9 - 8) * 4)));
-    GPIOB_AFRH |=  ((4 << ((8 - 8) * 4))  | (4 << ((9 - 8) * 4)));
-
-    // 6. Reset the I2C Peripheral to guarantee a clean hardware state
-    I2C1_CR1 |=  (1 << 15);
-    I2C1_CR1 &= ~(1 << 15);
-
-    // 7. Define Peripheral Input Frequency (Defaults to internal HSI = 16 MHz)
-    I2C1_CR2 |= (16 & 0x3F); // Set FREQ bits to 16
-
-    // 8. Configure Clock Control Register (CCR) for standard 100 kHz speed limits
-    // Formula: CCR = T_i2c / (2 * T_pclk1) -> 10us / (2 * 62.5ns) = 80
-    I2C1_CCR = 80;
-
-    // 9. Configure Maximum Rise Time Register (TRISE)
-    // Formula: (1000ns / T_pclk1) + 1 -> (1000ns / 62.5ns) + 1 = 17
-    I2C1_TRISE = 17;
-
-    // 10. Turn on the I2C peripheral block
-    I2C1_CR1 |= (1 << 0); // PE = 1
-}
-
-void I2C1_BurstRead(uint8_t slave_addr, uint8_t reg_addr, uint8_t *buffer, uint8_t size) {
-    // 1. Generate Start condition
-    I2C1_CR1 |= (1 << 8);
-    while (!(I2C1_SR1 & (1 << 0))); // Wait until SB (Start Bit) flag triggers
-
-    // 2. Transmit Slave Target Address with Write Bit (0)
-    I2C1_DR = (slave_addr << 1);
-    while (!(I2C1_SR1 & (1 << 1))); // Wait until ADDR flag flags an address match
-    (void)I2C1_SR2;                 // Clear ADDR flag bit by reading SR2 status map
-
-    // 3. Write target internal memory address location register pointer
-    I2C1_DR = reg_addr;
-    while (!(I2C1_SR1 & (1 << 7))); // Wait until TXE (Transmit Data Register Empty) clears
-
-    // 4. Generate a Repeated Start condition to flip direction bounds
-    I2C1_CR1 |= (1 << 8);
-    while (!(I2C1_SR1 & (1 << 0))); // Wait for SB flag again
-
-    // 5. Transmit Slave Target Address with Read Bit (1)
-    I2C1_DR = (slave_addr << 1) | 0x01;
-    while (!(I2C1_SR1 & (1 << 1))); // Wait for ADDR flag match
-    (void)I2C1_SR2;                 // Clear ADDR sequence layout
-
-    // 6. Loop to fetch byte streaming parameters safely
-    for (uint8_t i = 0; i < size; i++) {
-        if (i == (size - 1)) {
-            // Last byte processing: Disable Master ACKing and generate a STOP command
-            I2C1_CR1 &= ~(1 << 10); // Clear ACK bit
-            I2C1_CR1 |=  (1 << 9);  // Generate Stop
-        } else {
-            I2C1_CR1 |= (1 << 10);  // Enable ACK for remaining pipeline blocks
-        }
-
-        while (!(I2C1_SR1 & (1 << 6))); // Wait until RXNE (Receive Buffer Not Empty) updates
-        buffer[i] = I2C1_DR;            // Extract register block directly from data lines
-    }
-}
-
-void I2C1_WriteRegister(uint8_t slave_addr, uint8_t reg_addr, uint8_t data) {
-    // 1. Generate Start condition
-    I2C1_CR1 |= (1 << 8);
-    while (!(I2C1_SR1 & (1 << 0)));
-
-    // 2. Transmit Address (Write mode)
-    I2C1_DR = (slave_addr << 1);
-    while (!(I2C1_SR1 & (1 << 1)));
-    (void)I2C1_SR2;
-
-    // 3. Send target data destination location
-    I2C1_DR = reg_addr;
-    while (!(I2C1_SR1 & (1 << 7)));
-
-    // 4. Dump configuration byte payload parameters
-    I2C1_DR = data;
-    while (!(I2C1_SR1 & (1 << 7)));
-    while (!(I2C1_SR1 & (1 << 2))); // Wait for BTF (Byte Transfer Finished) to clear pipeline
-
-    // 5. Fire Stop execution cycle
-    I2C1_CR1 |= (1 << 9);
-}
-
-// ============================================================================
-// MAIN PIPELINE ENTRY
-// ============================================================================
-
-int main(void) {
-    uint8_t data_buffer[6] = {0};
-
-    // 1. Enable GPIOA Peripherals (for our local sanity check blink LED)
+void ADC1_Init(void) {
     RCC_AHB1ENR |= (1 << 0);
-    GPIOA_MODER &= ~(3 << (5 * 2));
-    GPIOA_MODER |=  (1 << (5 * 2));
+    RCC_APB2ENR |= (1 << 8);
+    GPIOA_MODER |= (3 << (0*2)) | (3 << (1*2));   // PA0, PA1 analog
+    ADC_SMPR2 &= ~((7 << 0) | (7 << 3));
+    ADC_SMPR2 |=  ((4 << 0) | (4 << 3));
+    ADC_CR2 |= (1 << 0);
+}
 
-    // 2. Boot up the I2C Hardware Block
+uint32_t ADC1_ReadChannel(uint8_t ch) {
+    ADC_SQR3 = ch;
+    ADC_CR2 |= (1 << 30);
+    while (!(ADC_SR & (1 << 1)));
+    return ADC_DR;
+}
+
+// ============================================================================
+// I2C1 DRIVER  (MLX90614 — parked, retained)
+// ============================================================================
+void I2C1_Init(void) {
+    RCC_AHB1ENR |= (1 << 1);
+    RCC_APB1ENR |= (1 << 21);
+    GPIOB_MODER &= ~((3 << (8*2)) | (3 << (9*2)));
+    GPIOB_MODER |=  ((2 << (8*2)) | (2 << (9*2)));
+    GPIOB_OTYPER |= (1 << 8) | (1 << 9);
+    GPIOB_OSPEEDR |= (3 << (8*2)) | (3 << (9*2));
+    GPIOB_PUPDR &= ~((3 << (8*2)) | (3 << (9*2)));
+    GPIOB_AFRH &= ~((0xF << 0) | (0xF << 4));
+    GPIOB_AFRH |=  ((4 << 0) | (4 << 4));
+    I2C_CR1 |= (1 << 15); I2C_CR1 &= ~(1 << 15);
+    I2C_CR2 = 16; I2C_CCR = 80; I2C_TRISE = 17;
+    I2C_CR1 |= (1 << 0);
+}
+
+static int i2c_wait(volatile uint32_t flag_mask) {
+    uint32_t timeout = 100000;
+    while (!(I2C_SR1 & flag_mask)) { if (--timeout == 0) { mlx_error = 1; return -1; } }
+    return 0;
+}
+
+int MLX_ReadTemp(uint8_t reg, uint16_t *out) {
+    mlx_error = 0;
+    I2C_CR1 |= (1 << 8);
+    if (i2c_wait(1 << 0) < 0) return -1;
+    I2C_DR = (MLX_ADDR << 1) | 0;
+    if (i2c_wait(1 << 1) < 0) return -1;
+    (void)I2C_SR1; (void)I2C_SR2;
+    if (i2c_wait(1 << 7) < 0) return -1;
+    I2C_DR = reg;
+    if (i2c_wait(1 << 2) < 0) return -1;
+    I2C_CR1 |= (1 << 8);
+    if (i2c_wait(1 << 0) < 0) return -1;
+    I2C_DR = (MLX_ADDR << 1) | 1;
+    if (i2c_wait(1 << 1) < 0) return -1;
+    I2C_CR1 |= (1 << 10);
+    (void)I2C_SR1; (void)I2C_SR2;
+    if (i2c_wait(1 << 6) < 0) return -1;
+    uint8_t lsb = I2C_DR;
+    if (i2c_wait(1 << 6) < 0) return -1;
+    uint8_t msb = I2C_DR;
+    I2C_CR1 &= ~(1 << 10);
+    I2C_CR1 |= (1 << 9);
+    if (i2c_wait(1 << 6) < 0) return -1;
+    (void)I2C_DR;
+    *out = ((uint16_t)msb << 8) | lsb;
+    return 0;
+}
+
+// ============================================================================
+// SPI1 DRIVER  (ADXL345, Mode 3, software CS on PA4)
+// ============================================================================
+#define CS_LOW()   (GPIOA_ODR &= ~(1 << 4))
+#define CS_HIGH()  (GPIOA_ODR |=  (1 << 4))
+
+void SPI1_Init(void) {
+    RCC_AHB1ENR |= (1 << 0);           // GPIOA
+    RCC_APB2ENR |= (1 << 12);          // SPI1 clock
+
+    // PA5/PA6/PA7 -> Alternate Function mode (10)
+    GPIOA_MODER &= ~((3 << (5*2)) | (3 << (6*2)) | (3 << (7*2)));
+    GPIOA_MODER |=  ((2 << (5*2)) | (2 << (6*2)) | (2 << (7*2)));
+
+    // High speed on the SPI pins
+    GPIOA_OSPEEDR |= (3 << (5*2)) | (3 << (6*2)) | (3 << (7*2));
+
+    // AF5 = SPI1, for pins 5,6,7 (AFRL nibbles 5,6,7)
+    GPIOA_AFRL &= ~((0xF << (5*4)) | (0xF << (6*4)) | (0xF << (7*4)));
+    GPIOA_AFRL |=  ((5 << (5*4)) | (5 << (6*4)) | (5 << (7*4)));
+
+    // PA4 = CS as plain push-pull output, idle HIGH (deselected)
+    GPIOA_MODER &= ~(3 << (4*2));
+    GPIOA_MODER |=  (1 << (4*2));
+    CS_HIGH();
+
+    // SPI1 config:
+    // CPOL=1 CPHA=1 (Mode 3), master, software NSS, MSB first,
+    // baud = fPCLK/32 (bits 5:3 = 100). APB2 default 16MHz -> 500kHz. Safe.
+    SPI_CR1 = 0;
+    SPI_CR1 |= (1 << 0);               // CPHA = 1
+    SPI_CR1 |= (1 << 1);               // CPOL = 1
+    SPI_CR1 |= (1 << 2);               // MSTR = master
+    SPI_CR1 |= (4 << 3);               // BR = /32
+    SPI_CR1 |= (1 << 8) | (1 << 9);    // SSI=1, SSM=1 (software slave mgmt)
+    SPI_CR1 |= (1 << 6);               // SPE = enable
+}
+
+uint8_t SPI1_Transfer(uint8_t data) {
+    while (!(SPI_SR & (1 << 1)));      // TXE
+    SPI_DR = data;
+    while (!(SPI_SR & (1 << 0)));      // RXNE
+    return SPI_DR;
+}
+
+void ADXL_WriteReg(uint8_t reg, uint8_t val) {
+    CS_LOW();
+    SPI1_Transfer(reg & 0x3F);         // write: R/W=0, MB=0
+    SPI1_Transfer(val);
+    CS_HIGH();
+}
+
+uint8_t ADXL_ReadReg(uint8_t reg) {
+    CS_LOW();
+    SPI1_Transfer(reg | ADXL_READ);    // read bit set
+    uint8_t v = SPI1_Transfer(0xFF);   // dummy to clock data out
+    CS_HIGH();
+    return v;
+}
+
+void ADXL_Init(void) {
+    // DATA_FORMAT = 0x0B -> full resolution, +/-16g range
+    ADXL_WriteReg(ADXL_DATA_FORMAT, 0x0B);
+    // POWER_CTL = 0x08 -> Measure bit set (exit standby)
+    ADXL_WriteReg(ADXL_POWER_CTL, 0x08);
+}
+
+void ADXL_ReadXYZ(int16_t *x, int16_t *y, int16_t *z) {
+    CS_LOW();
+    // read + multi-byte, starting at DATAX0: clocks out 6 bytes
+    SPI1_Transfer(ADXL_DATAX0 | ADXL_READ | ADXL_MB);
+    uint8_t x0 = SPI1_Transfer(0xFF);
+    uint8_t x1 = SPI1_Transfer(0xFF);
+    uint8_t y0 = SPI1_Transfer(0xFF);
+    uint8_t y1 = SPI1_Transfer(0xFF);
+    uint8_t z0 = SPI1_Transfer(0xFF);
+    uint8_t z1 = SPI1_Transfer(0xFF);
+    CS_HIGH();
+    // little-endian, signed 16-bit
+    *x = (int16_t)(((uint16_t)x1 << 8) | x0);
+    *y = (int16_t)(((uint16_t)y1 << 8) | y0);
+    *z = (int16_t)(((uint16_t)z1 << 8) | z0);
+}
+
+// ============================================================================
+// MAIN
+// ============================================================================
+int main(void) {
+    // Heartbeat LED on PB0
+    RCC_AHB1ENR |= (1 << 1);
+    GPIOB_MODER &= ~(3 << (0 * 2));
+    GPIOB_MODER |=  (1 << (0 * 2));
+
+    ADC1_Init();
     I2C1_Init();
-    delay(10000); // Small wait loop for power line stabilization
+    SPI1_Init();
 
-    // 3. Read Device ID to confirm wiring is working properly (Should equal 0xE5)
-    I2C1_BurstRead(ADXL_DEV_ADDR, ADXL_REG_DEVID, (uint8_t*)&device_id, 1);
+    // --- ADXL bring-up: verify identity BEFORE trusting any data ---
+    adxl_devid = ADXL_ReadReg(ADXL_DEVID);   // must be 0xE5 (229)
+    ADXL_Init();
 
-    if (device_id == 0xE5) {
-        // Validation check matches! Wake sensor from standby and activate measurements
-        I2C1_WriteRegister(ADXL_DEV_ADDR, ADXL_REG_POWER_CTL, 0x08);
-    } else {
-        // Hardware communication link failure loop indicator
-        while(1) {
-            GPIOA_ODR ^= (1 << 5); // Rapidly flash LED to alert something is broken
-            delay(100000);
-        }
-    }
-
-    /* Primary Application Operational Pipeline Loop */
     while(1) {
-        // Fetch 6 continuous data data bytes starting at Axis X low byte register 0x32
-        I2C1_BurstRead(ADXL_DEV_ADDR, ADXL_REG_DATAX0, data_buffer, 6);
 
-        // Assemble two uint8_t blocks into signed 16-bit integer containers using bit-shifts
-        x_axis = (int16_t)((data_buffer[1] << 8) | data_buffer[0]);
-        y_axis = (int16_t)((data_buffer[3] << 8) | data_buffer[2]);
-        z_axis = (int16_t)((data_buffer[5] << 8) | data_buffer[4]);
+        // ---------- SCT current (ch0) ----------
+        uint32_t offset_sum = 0;
+        for (int i = 0; i < SAMPLES; i++) { offset_sum += ADC1_ReadChannel(0); delay(80); }
+        dc_offset = (float)offset_sum / SAMPLES;
 
-        // Toggle user LED on each loop execution pass to verify activity
-        GPIOA_ODR ^= (1 << 5);
+        double sum_sq = 0.0;
+        for (int i = 0; i < SAMPLES; i++) {
+            raw_adc = ADC1_ReadChannel(0);
+            float centered = (float)raw_adc - dc_offset;
+            sum_sq += (double)(centered * centered);
+            delay(80);
+        }
+        rms_counts = sqrtf((float)(sum_sq / SAMPLES));
+        current_rms = ((rms_counts / 4095.0f) * 3.3f) * 30.0f;
+        if (rms_counts < 35.0f) current_rms = 0.0f;
 
-        // Keep loop update interval running smoothly
-        delay(200000);
+        // ---------- MAX4466 acoustic (ch1) ----------
+        uint32_t mic_offset_sum = 0;
+        for (int i = 0; i < MIC_SAMPLES; i++) { mic_offset_sum += ADC1_ReadChannel(1); }
+        mic_dc_offset = (float)mic_offset_sum / MIC_SAMPLES;
+
+        double mic_sum_sq = 0.0;
+        for (int i = 0; i < MIC_SAMPLES; i++) {
+            float c = (float)ADC1_ReadChannel(1) - mic_dc_offset;
+            mic_sum_sq += (double)(c * c);
+        }
+        acoustic_rms = sqrtf((float)(mic_sum_sq / MIC_SAMPLES));
+
+        // ---------- ADXL345 vibration ----------
+        // RMS of acceleration magnitude around gravity. At rest the magnitude
+        // is ~constant (1g); vibration makes it fluctuate. We remove the mean
+        // so the RMS reflects the AC fluctuation = vibration energy.
+        double mag_sum = 0.0, mag_sq_sum = 0.0;
+        float mags[VIB_SAMPLES];
+        for (int i = 0; i < VIB_SAMPLES; i++) {
+            ADXL_ReadXYZ((int16_t*)&accel_x, (int16_t*)&accel_y, (int16_t*)&accel_z);
+            float m = sqrtf((float)((int32_t)accel_x*accel_x
+                                  + (int32_t)accel_y*accel_y
+                                  + (int32_t)accel_z*accel_z));
+            mags[i] = m;
+            mag_sum += m;
+        }
+        float mag_mean = (float)(mag_sum / VIB_SAMPLES);
+        for (int i = 0; i < VIB_SAMPLES; i++) {
+            float d = mags[i] - mag_mean;
+            mag_sq_sum += (double)(d * d);
+        }
+        vibration_rms = sqrtf((float)(mag_sq_sum / VIB_SAMPLES));
+
+        // ---------- MLX90614 (parked) ----------
+        if (MLX_ReadTemp(MLX_TOBJ1, (uint16_t*)&mlx_raw) == 0) {
+            object_temp_c = ((float)mlx_raw * 0.02f) - 273.15f;
+        }
+
+        GPIOB_ODR ^= (1 << 0);   // heartbeat
     }
 }
