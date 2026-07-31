@@ -1,9 +1,8 @@
-
 # Industrial Motor Condition-Monitoring & Predictive Maintenance System
 
 Multi-sensor system on STM32 to detect early mechanical fault signatures in industrial motors — before failure, not after.
 
-**Status: In active development.** Vibration sensing and current sensing pipelines are fully operational and validated on-chip. This README reflects the real state of the build at all times.
+**Status: In active development.** Current sensing and vibration sensing pipelines are fully operational and validated on-chip. This README reflects the real state of the build at all times.
 
 ---
 
@@ -17,26 +16,23 @@ Motor faults announce themselves before failure — through vibration signatures
 
 ## System architecture
 
-
-```
-
 ```
                     ┌────────────────────────────┐
+ SCT-013 (current) ─┤ ADC ← analog front-end     │
+                    │       (burden R + DC bias)  │
+ MAX4466 (acoustic) ┤ ADC                         │──► live telemetry
+                    │                             │    (debugger memory)
+ ADXL345 (vibration)┤ SPI                         │
+                    │      STM32F446RE            │
+ MLX90614 (thermal) ┤ I2C                         │
+                    │      (ARM Cortex-M4)        │
+                    └────────────────────────────┘
 
+ Processing pipeline: raw capture → RMS feature extraction per sensor
+                      → 4-parameter feature vector → anomaly engine (planned)
 ```
 
-ADXL345 (vibration) ──┤ I2C                        │
-│                            │
-SCT-013 (current) ────┤ ADC ← analog front-end     │──► UART telemetry
-│       (burden R + DC bias) │    (live data out)
-Thermal IR (planned) ─┤ I2C/ADC                    │
-│      STM32F446RE           │
-Acoustic (planned) ───┤ ADC  (ARM Cortex-M4)       │
-└────────────────────────────┘
-
-Processing roadmap: raw capture → RMS / peak-to-peak feature extraction → ML anomaly engine
-
-```
+All firmware is **bare-metal Embedded C** — direct register access, no HAL — for low-latency, deterministic acquisition and full control over each peripheral.
 
 ---
 
@@ -44,60 +40,63 @@ Processing roadmap: raw capture → RMS / peak-to-peak feature extraction → ML
 
 | Component | Role | Interface | Status |
 |-----------|------|-----------|--------|
-| STM32 Nucleo-F446RE | Main controller (Cortex-M4 @ 180 MHz) | — | Active |
-| ADXL345 | 3-axis vibration sensing | I2C | ✅ Working, validated on live motor |
-| SCT-013-030 | Non-invasive current sensing (30A/1V CT clamp) | ADC1 (PA0) via voltage divider front-end | ✅ Working, verified live with RMS conversion |
-| Thermal IR sensor | Temperature signature | I2C/ADC | Planned (Next Phase) |
-| Acoustic sensor | Acoustic emission | ADC | Planned (Next Phase) |
+| STM32 Nucleo-F446RE | Main controller (Cortex-M4) | — | Active |
+| SCT-013-030 | Non-invasive current sensing (30A/1V CT clamp) | ADC1 ch0 (PA0) via DC-bias front-end | ✅ Working, true-RMS validated on-chip |
+| MAX4466 | Acoustic emission (electret mic amp) | ADC1 ch1 (PA1) | ✅ Working, RMS loudness validated |
+| ADXL345 | 3-axis vibration sensing | SPI1 (PA4–PA7) | ✅ Working, DEVID + live axis data validated |
+| MLX90614 | Thermal IR (object temperature) | I2C1 (PB8/PB9) | 🔧 Wired & coded; resolving physical connection |
 
 ### Current-Sensing Front End (Validated)
 
-The SCT-013-030 outputs an AC voltage proportional to the primary load current ($1\text{V RMS} = 30\text{A RMS}$). To allow the single-supply STM32 ADC ($0\text{--}3.3\text{V}$) to read the bipolar AC waveform:
+The SCT-013-030 outputs an AC voltage proportional to primary load current (1V RMS = 30A RMS). To let the single-supply STM32 ADC (0–3.3V) read the bipolar AC waveform:
 
-- **Internal Burden Resistor:** Utilized the module's integrated burden resistor to output a safe $0\text{--}1\text{V RMS}$ signal directly.
-- **$1.65\text{V}$ DC-Bias Network:** Built a 2-resistor voltage divider across the $+3.3\text{V}$ rail to shift the AC zero-crossing point directly to the ADC mid-point ($\approx 2048$ raw counts on a 12-bit ADC).
-- **On-Chip Signal Processing:** Configured bare-metal ADC1 on channel `PA0` to continuously sample over a $\sim 50\text{ms}$ window ($\approx 2.5$ full $50\text{Hz}$ AC cycles).
-- **Software Noise Gate:** Implemented a software peak-to-peak cut-off threshold ($<350$ counts) to filter out high-frequency breadboard contact noise and ground plane ripple when idling.
+- **Internal Burden Resistor:** Used the module's integrated burden resistor to output a safe 0–1V RMS signal directly.
+- **1.65V DC-Bias Network:** A 2-resistor divider across +3.3V shifts the AC zero-crossing to the ADC mid-point (~2048 counts on the 12-bit ADC), with a 10µF cap decoupling the bias rail.
+- **On-Chip Processing:** Bare-metal ADC1 samples PA0 over a fixed window, computing **true RMS via sum-of-squares** (per-window DC-offset removal), then converts to I_RMS using the sensor's calibration.
+- **Noise Gate:** A software floor on RMS counts suppresses residual breadboard pickup when idling. (Sum-of-squares replaced an earlier peak-to-peak method that was corrupted by single-sample noise spikes — the corrected method is inherently spike-robust.)
 
 ---
 
 ## What's validated so far
 
-- **Vibration Pipeline:** ADXL345 configured and read over bare-metal I2C (register-level init: data format, sampling rate, measurement mode); captured live vibration signatures under actual motor load.
-- **Current Pipeline:** SCT-013 front-end hardware built and validated. Real-time ADC1 sampling converts raw peak-to-peak waveform swings into true $I_{RMS}$ values.
-- **Hardware Bus Resilience:** Debugged and resolved bare-metal I2C bus hangs (missing timeouts/SDA low lockups) and ARM Cortex-M4 vector table stack alignment faults (`HardFault` handler routines).
-- **Live Telemetry:** Streaming raw ADC, peak-to-peak counts, and real-time $I_{RMS}$ directly to debugger live memory inspection interfaces.
+- **Current Pipeline (SCT-013):** Analog front-end built; bare-metal ADC1 sampling; true-RMS extraction verified live via debugger memory inspection. Reads ~0 idle, sane current under load.
+- **Acoustic Pipeline (MAX4466):** Added as a second ADC channel; same sum-of-squares RMS yields a relative loudness feature that responds to sound in real time.
+- **Vibration Pipeline (ADXL345):** Bare-metal SPI (Mode 3, software chip-select). Bring-up verifies the DEVID register (0xE5) before trusting data; reads signed 16-bit X/Y/Z and computes a gravity-independent vibration-energy feature (RMS of acceleration-magnitude fluctuation).
+- **Bus Resilience:** Bare-metal I2C driver written with bounded timeouts so a flaky sensor connection flags an error instead of hanging the whole node — one dead sensor can't freeze the others.
+- **Live Telemetry:** Streaming raw ADC, RMS features, and per-axis acceleration to the debugger's live memory inspection interface.
 
 ---
 
 ## Roadmap
 
-1. ✅ Vibration acquisition (ADXL345 / I2C) — Done, validated on live motor
-2. ✅ Current sensing (SCT-013 + analog front-end) — Done, $1.65\text{V}$ DC bias & $I_{RMS}$ calculation validated
-3. 🔧 Multi-sensor baseline acquisition — Integrating thermal & acoustic channels to build a complete 4-parameter feature vector
-4. Unsupervised ML model training (Isolation Forest / Autoencoder) for dynamic, self-learning anomaly thresholding
-5. On-device edge inference deployment (C-array quantization via Edge Impulse / STM32Cube.AI)
+1. ✅ Current sensing (SCT-013 + analog front-end) — done, 1.65V DC bias & true I_RMS validated
+2. ✅ Acoustic sensing (MAX4466) — done, RMS loudness feature validated
+3. ✅ Vibration acquisition (ADXL345 / SPI) — done, DEVID + live axis data validated
+4. 🔧 Thermal sensing (MLX90614 / I2C) — wired and coded; resolving a physical connection issue to complete the 4th channel
+5. Assemble the 4-parameter feature vector `[current, acoustic, vibration, temperature]` per acquisition cycle
+6. Threshold-based multi-sensor anomaly detection for real-time fault flagging
+7. Unsupervised ML (Isolation Forest / Autoencoder) for self-learning anomaly thresholds
+8. On-device edge inference (quantized model via Edge Impulse / STM32Cube.AI)
+
+*Note: on-motor validation under real load is a planned test; current validation is on-bench with live signals.*
 
 ---
 
 ## Repo layout
 
-
 ```
-
 ├── Core/                STM32CubeIDE project source (main, drivers, config)
 ├── docs/
-│   ├── debug-log.md    Problems hit and how they were resolved
-│   └── wiring.md       Sensor wiring and front-end schematic notes
+│   ├── debug-log.md     Problems hit and how they were resolved
+│   └── wiring.md        Sensor wiring and front-end notes
 └── data/                Sample captured sensor data
-
 ```
 
 ---
 
 ## Tools
 
-STM32CubeIDE · Embedded C (STM32 HAL, register-level configuration where needed) · Git
+STM32 Nucleo-F446RE · Embedded C (bare-metal, register-level) · STM32CubeIDE · SPI · I2C · ADC (multi-channel) · analog signal conditioning · Git
 
 ---
 
@@ -110,11 +109,9 @@ Built by a 4-member team — final-year Electronics Engineering, Bangalore Insti
 - **Sumit Sungar**
 - **Sugreshwara H**
 
-This repo is maintained by [Parshwa Sangame](https://github.com/YOUR-USERNAME) — my focus areas in the project: sensor integration and bring-up (ADXL345/I2C), the current-sensing analog front end, debugging, and component sourcing/BOM. Part of a broader interest in affordable industrial hardware for Indian SMEs — see my [sector research](https://github.com/YOUR-USERNAME/india-hardware-opportunities).
+Maintained by [Parshwa Sangame](https://github.com/YOUR-USERNAME). My focus areas: sensor integration and bring-up (ADXL345/SPI, MLX90614/I2C), the current-sensing analog front end, bare-metal driver debugging, and component sourcing/BOM. Part of a broader interest in affordable industrial hardware for Indian SMEs — see my [sector research](https://github.com/YOUR-USERNAME/india-hardware-opportunities).
 
 ---
 
-## Video link 
-[DRIVE LINK](https://drive.google.com/file/d/1ArUdlh8uGeaoBaL-WMMEUXpvZn7hS0YO/view?usp=drive_link).
-
-```
+## Video link
+[DRIVE LINK](https://drive.google.com/file/d/1ArUdlh8uGeaoBaL-WMMEUXpvZn7hS0YO/view?usp=drive_link)
