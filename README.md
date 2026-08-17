@@ -104,31 +104,6 @@ A developing fault typically shows up as more than one feature drifting at once,
 
 ---
 
-## Wiring
-
-Full connection tables and circuit diagrams are in the repo:
-
-- `PdM_Connections.pdf`, pin-by-pin wiring reference
-- `pdm_circuit_diagram.png` / `.svg` / `.pdf`, schematic views
-
----
-
-## Repository Structure
-
-```
-├── four_sensor_uart_full.c     # Main firmware (all 4 sensors, bare-metal)
-├── bridge.py                   # Serial-to-browser bridge (Python)
-├── pdm_dashboard_live.html     # Live HMI dashboard
-├── adxl_test.c                 # Standalone vibration sensor test
-├── mic_test.c                  # Standalone acoustic sensor test
-├── ds18b20_test.c              # Standalone temperature sensor test
-├── i2c_scanner.c               # I2C bus diagnostic tool
-├── PdM_Connections.pdf         # Wiring reference
-└── pdm_circuit_diagram.*       # Circuit diagrams (png/svg/pdf)
-```
-
----
-
 ## Getting Started
 
 1. Flash `four_sensor_uart_full.c` to an STM32 Nucleo-F446RE via STM32CubeIDE.
