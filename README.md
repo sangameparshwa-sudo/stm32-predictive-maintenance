@@ -163,3 +163,7 @@ Final-year Electronics and Communication Engineering, Bangalore
 [LinkedIn](https://in.linkedin.com/in/parshwa-sangame-a89484314) · sangame.parshwa@gmail.com
 
 <img src="https://capsule-render.vercel.app/api?type=rect&color=0:FFB300,50:C1121F,100:8B0000&height=60&section=footer" />
+
+## FIELD TESTING
+
+<img width="1448" height="1086" alt="2" src="https://github.com/user-attachments/assets/752e1137-ebe1-47c3-981c-91ebea31f682" />
