@@ -2,352 +2,294 @@
 #include <math.h>
 
 // ============================================================================
-// REGISTERS & MEMORY MAP (STM32F446RE)
+// PdM EDGE NODE — FOUR SENSORS + UART STREAM
+// STM32F446RE, bare-metal, for a CubeIDE "Empty Project"
+// (startup + syscalls provided by project; NO vector table / stubs here)
+//
+//   SCT-013   current   -> ADC1 ch0  (PA0)
+//   MAX4466   acoustic   -> ADC1 ch1  (PA1)
+//   ADXL345   vibration  -> SPI1 (PA4 CS, PA5 SCK, PA6 MISO, PA7 MOSI)
+//   DS18B20   temperature-> 1-Wire on PC0 (+4.7k pull-up to 3.3V)
+//   UART out  -> USART2 TX (PA2) -> ST-Link USB COM port @ 115200
+//
+// FPU is enabled (float math would HardFault otherwise on an Empty Project).
+// DS18B20 is NON-BLOCKING: we start its conversion, read the 3 fast sensors,
+// and collect the temperature on the next loop -> fast sensors stay fast.
+//
+// Stream format:  "current,vibration,acoustic,temperature\n"
+//   e.g.  "0.00,1.80,120.5,26.75\n"
 // ============================================================================
 
-#define PERIPH_BASE         ((uint32_t)0x40000000)
-#define AHB1PERIPH_BASE     (PERIPH_BASE + 0x00020000)
-#define APB1PERIPH_BASE     (PERIPH_BASE + 0x00000000)
-#define APB2PERIPH_BASE     (PERIPH_BASE + 0x00010000)
+#define PERIPH_BASE     ((uint32_t)0x40000000)
+#define AHB1PERIPH_BASE (PERIPH_BASE + 0x00020000)
+#define APB1PERIPH_BASE (PERIPH_BASE + 0x00000000)
+#define APB2PERIPH_BASE (PERIPH_BASE + 0x00010000)
 
 // RCC
-#define RCC_BASE            (AHB1PERIPH_BASE + 0x00003800)
-#define RCC_AHB1ENR         (*(volatile uint32_t *)(RCC_BASE + 0x30))
-#define RCC_APB1ENR         (*(volatile uint32_t *)(RCC_BASE + 0x40))
-#define RCC_APB2ENR         (*(volatile uint32_t *)(RCC_BASE + 0x44))
+#define RCC_BASE     (AHB1PERIPH_BASE + 0x00003800)
+#define RCC_AHB1ENR  (*(volatile uint32_t *)(RCC_BASE + 0x30))
+#define RCC_APB1ENR  (*(volatile uint32_t *)(RCC_BASE + 0x40))
+#define RCC_APB2ENR  (*(volatile uint32_t *)(RCC_BASE + 0x44))
 
-// GPIOA (PA0=SCT ch0, PA1=MIC ch1, PA4=ADXL CS, PA5=SCK, PA6=MISO, PA7=MOSI)
-#define GPIOA_BASE          (AHB1PERIPH_BASE + 0x00000000)
-#define GPIOA_MODER         (*(volatile uint32_t *)(GPIOA_BASE + 0x00))
-#define GPIOA_OTYPER        (*(volatile uint32_t *)(GPIOA_BASE + 0x04))
-#define GPIOA_OSPEEDR       (*(volatile uint32_t *)(GPIOA_BASE + 0x08))
-#define GPIOA_PUPDR         (*(volatile uint32_t *)(GPIOA_BASE + 0x0C))
-#define GPIOA_ODR           (*(volatile uint32_t *)(GPIOA_BASE + 0x14))
-#define GPIOA_AFRL          (*(volatile uint32_t *)(GPIOA_BASE + 0x20))  // AF for pins 0-7
+// GPIOA (PA0 SCT, PA1 MIC, PA2 UART_TX, PA4 CS, PA5 SCK, PA6 MISO, PA7 MOSI)
+#define GPIOA_BASE    (AHB1PERIPH_BASE + 0x00000000)
+#define GPIOA_MODER   (*(volatile uint32_t *)(GPIOA_BASE + 0x00))
+#define GPIOA_OSPEEDR (*(volatile uint32_t *)(GPIOA_BASE + 0x08))
+#define GPIOA_ODR     (*(volatile uint32_t *)(GPIOA_BASE + 0x14))
+#define GPIOA_AFRL    (*(volatile uint32_t *)(GPIOA_BASE + 0x20))
 
-// GPIOB (PB0 = heartbeat LED, PB8 = I2C1_SCL, PB9 = I2C1_SDA)
-#define GPIOB_BASE          (AHB1PERIPH_BASE + 0x00000400)
-#define GPIOB_MODER         (*(volatile uint32_t *)(GPIOB_BASE + 0x00))
-#define GPIOB_OTYPER        (*(volatile uint32_t *)(GPIOB_BASE + 0x04))
-#define GPIOB_OSPEEDR       (*(volatile uint32_t *)(GPIOB_BASE + 0x08))
-#define GPIOB_PUPDR         (*(volatile uint32_t *)(GPIOB_BASE + 0x0C))
-#define GPIOB_ODR           (*(volatile uint32_t *)(GPIOB_BASE + 0x14))
-#define GPIOB_AFRH          (*(volatile uint32_t *)(GPIOB_BASE + 0x24))
+// GPIOC (PC0 = 1-Wire)
+#define GPIOC_BASE    (AHB1PERIPH_BASE + 0x00000800)
+#define GPIOC_MODER   (*(volatile uint32_t *)(GPIOC_BASE + 0x00))
+#define GPIOC_OTYPER  (*(volatile uint32_t *)(GPIOC_BASE + 0x04))
+#define GPIOC_PUPDR   (*(volatile uint32_t *)(GPIOC_BASE + 0x0C))
+#define GPIOC_IDR     (*(volatile uint32_t *)(GPIOC_BASE + 0x10))
+#define GPIOC_ODR     (*(volatile uint32_t *)(GPIOC_BASE + 0x14))
 
 // ADC1
-#define ADC1_BASE           (APB2PERIPH_BASE + 0x00002000)
-#define ADC_SR              (*(volatile uint32_t *)(ADC1_BASE + 0x00))
-#define ADC_CR2             (*(volatile uint32_t *)(ADC1_BASE + 0x08))
-#define ADC_SMPR2           (*(volatile uint32_t *)(ADC1_BASE + 0x10))
-#define ADC_SQR3            (*(volatile uint32_t *)(ADC1_BASE + 0x34))
-#define ADC_DR              (*(volatile uint32_t *)(ADC1_BASE + 0x4C))
+#define ADC1_BASE   (APB2PERIPH_BASE + 0x00002000)
+#define ADC_SR      (*(volatile uint32_t *)(ADC1_BASE + 0x00))
+#define ADC_CR2     (*(volatile uint32_t *)(ADC1_BASE + 0x08))
+#define ADC_SMPR2   (*(volatile uint32_t *)(ADC1_BASE + 0x10))
+#define ADC_SQR3    (*(volatile uint32_t *)(ADC1_BASE + 0x34))
+#define ADC_DR      (*(volatile uint32_t *)(ADC1_BASE + 0x4C))
 
-// I2C1
-#define I2C1_BASE           (APB1PERIPH_BASE + 0x00005400)
-#define I2C_CR1             (*(volatile uint32_t *)(I2C1_BASE + 0x00))
-#define I2C_CR2             (*(volatile uint32_t *)(I2C1_BASE + 0x04))
-#define I2C_DR              (*(volatile uint32_t *)(I2C1_BASE + 0x10))
-#define I2C_SR1             (*(volatile uint32_t *)(I2C1_BASE + 0x14))
-#define I2C_SR2             (*(volatile uint32_t *)(I2C1_BASE + 0x18))
-#define I2C_CCR             (*(volatile uint32_t *)(I2C1_BASE + 0x1C))
-#define I2C_TRISE           (*(volatile uint32_t *)(I2C1_BASE + 0x20))
+// SPI1
+#define SPI1_BASE   (APB2PERIPH_BASE + 0x00003000)
+#define SPI_CR1     (*(volatile uint32_t *)(SPI1_BASE + 0x00))
+#define SPI_SR      (*(volatile uint32_t *)(SPI1_BASE + 0x08))
+#define SPI_DR      (*(volatile uint32_t *)(SPI1_BASE + 0x0C))
 
-// SPI1 (on APB2)
-#define SPI1_BASE           (APB2PERIPH_BASE + 0x00003000)
-#define SPI_CR1             (*(volatile uint32_t *)(SPI1_BASE + 0x00))
-#define SPI_SR              (*(volatile uint32_t *)(SPI1_BASE + 0x08))
-#define SPI_DR              (*(volatile uint32_t *)(SPI1_BASE + 0x0C))
+// TIM2 (microsecond delay)
+#define TIM2_BASE   (APB1PERIPH_BASE + 0x00000000)
+#define TIM2_CR1    (*(volatile uint32_t *)(TIM2_BASE + 0x00))
+#define TIM2_CNT    (*(volatile uint32_t *)(TIM2_BASE + 0x24))
+#define TIM2_PSC    (*(volatile uint32_t *)(TIM2_BASE + 0x28))
+#define TIM2_ARR    (*(volatile uint32_t *)(TIM2_BASE + 0x2C))
+#define TIM2_EGR    (*(volatile uint32_t *)(TIM2_BASE + 0x14))
 
-#define SAMPLES     800
-#define MIC_SAMPLES 2000
-#define VIB_SAMPLES 256        // vibration burst for RMS
-#define MLX_ADDR    0x5A
-#define MLX_TOBJ1   0x07
+// USART2
+#define USART2_BASE  (APB1PERIPH_BASE + 0x00004400)
+#define USART_SR     (*(volatile uint32_t *)(USART2_BASE + 0x00))
+#define USART_DR     (*(volatile uint32_t *)(USART2_BASE + 0x04))
+#define USART_BRR    (*(volatile uint32_t *)(USART2_BASE + 0x08))
+#define USART_CR1    (*(volatile uint32_t *)(USART2_BASE + 0x0C))
 
-// ADXL345 registers
-#define ADXL_DEVID       0x00   // reads 0xE5
+#define OW_PIN 0            // PC0
+#define SAMPLES     500     // SCT window (reduced for speed)
+#define MIC_SAMPLES 1000    // mic burst (reduced for speed)
+#define VIB_SAMPLES 128     // vibration burst (reduced for speed)
+
+// ADXL345
+#define ADXL_DEVID       0x00
 #define ADXL_POWER_CTL   0x2D
 #define ADXL_DATA_FORMAT 0x31
 #define ADXL_DATAX0      0x32
-
-// ADXL345 SPI address-byte bits
 #define ADXL_READ  0x80
-#define ADXL_MB    0x40   // multi-byte auto-increment
+#define ADXL_MB    0x40
+
+// ---- globals (also visible in debugger) ----
+volatile float    current_rms   = 0.0f;
+volatile float    acoustic_rms  = 0.0f;
+volatile uint8_t  adxl_devid    = 0;
+volatile int16_t  accel_x=0, accel_y=0, accel_z=0;
+volatile float    vibration_rms = 0.0f;
+volatile int16_t  temp_raw      = 0;
+volatile float    temperature_c = 0.0f;
+volatile int      ds_present     = 0;
 
 // ============================================================================
-// GLOBALS (watch these in Live Expressions)
+// microsecond timer
 // ============================================================================
-volatile uint32_t raw_adc = 0;
-volatile float    dc_offset = 0.0f;
-volatile float    rms_counts = 0.0f;
-volatile float    current_rms = 0.0f;
-
-volatile uint16_t mlx_raw = 0;
-volatile float    object_temp_c = 0.0f;
-volatile int      mlx_error = 0;
-
-volatile float    mic_dc_offset = 0.0f;
-volatile float    acoustic_rms = 0.0f;
-
-volatile uint8_t  adxl_devid = 0;      // MUST read 0xE5 (229). This is your test.
-volatile int16_t  accel_x = 0, accel_y = 0, accel_z = 0;
-volatile float    vibration_rms = 0.0f; // RMS of acceleration magnitude (fault feature)
+void us_timer_init(void){
+    RCC_APB1ENR |= (1 << 0);
+    TIM2_PSC = 16 - 1;
+    TIM2_ARR = 0xFFFFFFFF;
+    TIM2_EGR = 1;
+    TIM2_CR1 = 1;
+}
+void delay_us(uint32_t us){ uint32_t s=TIM2_CNT; while((TIM2_CNT-s)<us){} }
 
 // ============================================================================
-// VECTOR TABLE
+// UART
 // ============================================================================
-int main(void);
-void Reset_Handler(void);
-void Default_Handler(void) { while(1); }
-
-__attribute__((section(".isr_vector"), used))
-const uint32_t g_pfnVectors[] = {
-    0x2001C000,
-    (uint32_t)&Reset_Handler,
-    (uint32_t)&Default_Handler, (uint32_t)&Default_Handler,
-    (uint32_t)&Default_Handler, (uint32_t)&Default_Handler,
-    (uint32_t)&Default_Handler,
-    0, 0, 0, 0,
-    (uint32_t)&Default_Handler, (uint32_t)&Default_Handler,
-    0,
-    (uint32_t)&Default_Handler, (uint32_t)&Default_Handler
-};
-
-void Reset_Handler(void) { main(); }
-
-int _close(int f){return -1;} int _lseek(int f,int p,int d){return 0;}
-int _read(int f,char*p,int l){return 0;} int _write(int f,char*p,int l){return l;}
-
-void delay(volatile uint32_t count) { while(count--) { __asm("nop"); } }
-
-// ============================================================================
-// ADC1 DRIVER  (SCT ch0/PA0, MIC ch1/PA1)
-// ============================================================================
-void ADC1_Init(void) {
+void UART2_Init(void){
     RCC_AHB1ENR |= (1 << 0);
-    RCC_APB2ENR |= (1 << 8);
-    GPIOA_MODER |= (3 << (0*2)) | (3 << (1*2));   // PA0, PA1 analog
-    ADC_SMPR2 &= ~((7 << 0) | (7 << 3));
-    ADC_SMPR2 |=  ((4 << 0) | (4 << 3));
-    ADC_CR2 |= (1 << 0);
+    RCC_APB1ENR |= (1 << 17);
+    GPIOA_MODER &= ~(3u << (2*2));
+    GPIOA_MODER |=  (2u << (2*2));
+    GPIOA_AFRL  &= ~(0xFu << (2*4));
+    GPIOA_AFRL  |=  (7u << (2*4));
+    USART_BRR = 139;
+    USART_CR1 = (1<<3) | (1<<13);
+}
+void uart_putc(char c){ while(!(USART_SR & (1<<7))); USART_DR = c; }
+void uart_puts(const char*s){ while(*s) uart_putc(*s++); }
+void uart_putfloat(float v,int dec){
+    if(v<0){ uart_putc('-'); v=-v; }
+    long scale=1; for(int i=0;i<dec;i++) scale*=10;
+    long scaled=(long)(v*scale+0.5f);
+    long ip=scaled/scale, fp=scaled%scale;
+    char buf[12]; int n=0;
+    if(ip==0) buf[n++]='0';
+    while(ip>0){ buf[n++]='0'+(ip%10); ip/=10; }
+    while(n--) uart_putc(buf[n]);
+    if(dec>0){ uart_putc('.');
+        for(int i=dec-1;i>=0;i--){ long p=1; for(int k=0;k<i;k++) p*=10; uart_putc('0'+((fp/p)%10)); } }
 }
 
-uint32_t ADC1_ReadChannel(uint8_t ch) {
+// ============================================================================
+// ADC (SCT ch0, MIC ch1)
+// ============================================================================
+void ADC1_Init(void){
+    RCC_AHB1ENR |= (1 << 0);
+    RCC_APB2ENR |= (1 << 8);
+    GPIOA_MODER |= (3u<<(0*2)) | (3u<<(1*2));
+    ADC_SMPR2 &= ~((7u<<0)|(7u<<3));
+    ADC_SMPR2 |=  ((4u<<0)|(4u<<3));
+    ADC_CR2 |= (1<<0);
+}
+uint32_t ADC1_Read(uint8_t ch){
     ADC_SQR3 = ch;
-    ADC_CR2 |= (1 << 30);
-    while (!(ADC_SR & (1 << 1)));
+    ADC_CR2 |= (1<<30);
+    while(!(ADC_SR & (1<<1)));
     return ADC_DR;
 }
 
 // ============================================================================
-// I2C1 DRIVER  (MLX90614 — parked, retained)
+// SPI1 (ADXL345, Mode 3, CS on PA4, /128)
 // ============================================================================
-void I2C1_Init(void) {
-    RCC_AHB1ENR |= (1 << 1);
-    RCC_APB1ENR |= (1 << 21);
-    GPIOB_MODER &= ~((3 << (8*2)) | (3 << (9*2)));
-    GPIOB_MODER |=  ((2 << (8*2)) | (2 << (9*2)));
-    GPIOB_OTYPER |= (1 << 8) | (1 << 9);
-    GPIOB_OSPEEDR |= (3 << (8*2)) | (3 << (9*2));
-    GPIOB_PUPDR &= ~((3 << (8*2)) | (3 << (9*2)));
-    GPIOB_AFRH &= ~((0xF << 0) | (0xF << 4));
-    GPIOB_AFRH |=  ((4 << 0) | (4 << 4));
-    I2C_CR1 |= (1 << 15); I2C_CR1 &= ~(1 << 15);
-    I2C_CR2 = 16; I2C_CCR = 80; I2C_TRISE = 17;
-    I2C_CR1 |= (1 << 0);
-}
-
-static int i2c_wait(volatile uint32_t flag_mask) {
-    uint32_t timeout = 100000;
-    while (!(I2C_SR1 & flag_mask)) { if (--timeout == 0) { mlx_error = 1; return -1; } }
-    return 0;
-}
-
-int MLX_ReadTemp(uint8_t reg, uint16_t *out) {
-    mlx_error = 0;
-    I2C_CR1 |= (1 << 8);
-    if (i2c_wait(1 << 0) < 0) return -1;
-    I2C_DR = (MLX_ADDR << 1) | 0;
-    if (i2c_wait(1 << 1) < 0) return -1;
-    (void)I2C_SR1; (void)I2C_SR2;
-    if (i2c_wait(1 << 7) < 0) return -1;
-    I2C_DR = reg;
-    if (i2c_wait(1 << 2) < 0) return -1;
-    I2C_CR1 |= (1 << 8);
-    if (i2c_wait(1 << 0) < 0) return -1;
-    I2C_DR = (MLX_ADDR << 1) | 1;
-    if (i2c_wait(1 << 1) < 0) return -1;
-    I2C_CR1 |= (1 << 10);
-    (void)I2C_SR1; (void)I2C_SR2;
-    if (i2c_wait(1 << 6) < 0) return -1;
-    uint8_t lsb = I2C_DR;
-    if (i2c_wait(1 << 6) < 0) return -1;
-    uint8_t msb = I2C_DR;
-    I2C_CR1 &= ~(1 << 10);
-    I2C_CR1 |= (1 << 9);
-    if (i2c_wait(1 << 6) < 0) return -1;
-    (void)I2C_DR;
-    *out = ((uint16_t)msb << 8) | lsb;
-    return 0;
-}
-
-// ============================================================================
-// SPI1 DRIVER  (ADXL345, Mode 3, software CS on PA4)
-// ============================================================================
-#define CS_LOW()   (GPIOA_ODR &= ~(1 << 4))
-#define CS_HIGH()  (GPIOA_ODR |=  (1 << 4))
-
-void SPI1_Init(void) {
-    RCC_AHB1ENR |= (1 << 0);           // GPIOA
-    RCC_APB2ENR |= (1 << 12);          // SPI1 clock
-
-    // PA5/PA6/PA7 -> Alternate Function mode (10)
-    GPIOA_MODER &= ~((3 << (5*2)) | (3 << (6*2)) | (3 << (7*2)));
-    GPIOA_MODER |=  ((2 << (5*2)) | (2 << (6*2)) | (2 << (7*2)));
-
-    // High speed on the SPI pins
-    GPIOA_OSPEEDR |= (3 << (5*2)) | (3 << (6*2)) | (3 << (7*2));
-
-    // AF5 = SPI1, for pins 5,6,7 (AFRL nibbles 5,6,7)
-    GPIOA_AFRL &= ~((0xF << (5*4)) | (0xF << (6*4)) | (0xF << (7*4)));
-    GPIOA_AFRL |=  ((5 << (5*4)) | (5 << (6*4)) | (5 << (7*4)));
-
-    // PA4 = CS as plain push-pull output, idle HIGH (deselected)
-    GPIOA_MODER &= ~(3 << (4*2));
-    GPIOA_MODER |=  (1 << (4*2));
+#define CS_LOW()  (GPIOA_ODR &= ~(1<<4))
+#define CS_HIGH() (GPIOA_ODR |=  (1<<4))
+void SPI1_Init(void){
+    RCC_AHB1ENR |= (1 << 0);
+    RCC_APB2ENR |= (1 << 12);
+    GPIOA_MODER &= ~((3u<<(5*2))|(3u<<(6*2))|(3u<<(7*2)));
+    GPIOA_MODER |=  ((2u<<(5*2))|(2u<<(6*2))|(2u<<(7*2)));
+    GPIOA_OSPEEDR |= (3u<<(5*2))|(3u<<(6*2))|(3u<<(7*2));
+    GPIOA_AFRL &= ~((0xFu<<(5*4))|(0xFu<<(6*4))|(0xFu<<(7*4)));
+    GPIOA_AFRL |=  ((5u<<(5*4))|(5u<<(6*4))|(5u<<(7*4)));
+    GPIOA_MODER &= ~(3u<<(4*2));
+    GPIOA_MODER |=  (1u<<(4*2));
     CS_HIGH();
-
-    // SPI1 config:
-    // CPOL=1 CPHA=1 (Mode 3), master, software NSS, MSB first,
-    // baud = fPCLK/32 (bits 5:3 = 100). APB2 default 16MHz -> 500kHz. Safe.
     SPI_CR1 = 0;
-    SPI_CR1 |= (1 << 0);               // CPHA = 1
-    SPI_CR1 |= (1 << 1);               // CPOL = 1
-    SPI_CR1 |= (1 << 2);               // MSTR = master
-    SPI_CR1 |= (4 << 3);               // BR = /32
-    SPI_CR1 |= (1 << 8) | (1 << 9);    // SSI=1, SSM=1 (software slave mgmt)
-    SPI_CR1 |= (1 << 6);               // SPE = enable
+    SPI_CR1 |= (1<<0)|(1<<1);   // Mode 3
+    SPI_CR1 |= (1<<2);          // master
+    SPI_CR1 |= (6<<3);          // /128
+    SPI_CR1 |= (1<<8)|(1<<9);
+    SPI_CR1 |= (1<<6);
 }
-
-uint8_t SPI1_Transfer(uint8_t data) {
-    while (!(SPI_SR & (1 << 1)));      // TXE
-    SPI_DR = data;
-    while (!(SPI_SR & (1 << 0)));      // RXNE
-    return SPI_DR;
-}
-
-void ADXL_WriteReg(uint8_t reg, uint8_t val) {
+uint8_t SPI1_TX(uint8_t d){ while(!(SPI_SR&(1<<1))); SPI_DR=d; while(!(SPI_SR&(1<<0))); return SPI_DR; }
+void ADXL_W(uint8_t r,uint8_t v){ CS_LOW(); SPI1_TX(r&0x3F); SPI1_TX(v); CS_HIGH(); }
+uint8_t ADXL_R(uint8_t r){ CS_LOW(); SPI1_TX(r|ADXL_READ); uint8_t v=SPI1_TX(0xFF); CS_HIGH(); return v; }
+void ADXL_Init(void){ ADXL_W(ADXL_DATA_FORMAT,0x0B); ADXL_W(ADXL_POWER_CTL,0x08); }
+void ADXL_XYZ(int16_t*x,int16_t*y,int16_t*z){
     CS_LOW();
-    SPI1_Transfer(reg & 0x3F);         // write: R/W=0, MB=0
-    SPI1_Transfer(val);
+    SPI1_TX(ADXL_DATAX0|ADXL_READ|ADXL_MB);
+    uint8_t x0=SPI1_TX(0xFF),x1=SPI1_TX(0xFF);
+    uint8_t y0=SPI1_TX(0xFF),y1=SPI1_TX(0xFF);
+    uint8_t z0=SPI1_TX(0xFF),z1=SPI1_TX(0xFF);
     CS_HIGH();
+    *x=(int16_t)((x1<<8)|x0); *y=(int16_t)((y1<<8)|y0); *z=(int16_t)((z1<<8)|z0);
 }
 
-uint8_t ADXL_ReadReg(uint8_t reg) {
-    CS_LOW();
-    SPI1_Transfer(reg | ADXL_READ);    // read bit set
-    uint8_t v = SPI1_Transfer(0xFF);   // dummy to clock data out
-    CS_HIGH();
-    return v;
-}
+// ============================================================================
+// 1-WIRE (DS18B20)
+// ============================================================================
+static inline void ow_low(void){ GPIOC_MODER&=~(3u<<(OW_PIN*2)); GPIOC_MODER|=(1u<<(OW_PIN*2)); GPIOC_ODR&=~(1u<<OW_PIN); }
+static inline void ow_rel(void){ GPIOC_MODER&=~(3u<<(OW_PIN*2)); }
+static inline int  ow_pin(void){ return (GPIOC_IDR>>OW_PIN)&1; }
+int ow_reset(void){ int p; ow_low(); delay_us(480); ow_rel(); delay_us(70); p=(ow_pin()==0); delay_us(410); return p; }
+void ow_wbit(int b){ if(b){ow_low();delay_us(6);ow_rel();delay_us(64);}else{ow_low();delay_us(60);ow_rel();delay_us(10);} }
+int  ow_rbit(void){ int b; ow_low();delay_us(6);ow_rel();delay_us(9); b=ow_pin(); delay_us(55); return b; }
+void ow_wbyte(uint8_t v){ for(int i=0;i<8;i++){ow_wbit(v&1);v>>=1;} }
+uint8_t ow_rbyte(void){ uint8_t v=0; for(int i=0;i<8;i++){if(ow_rbit())v|=(1<<i);} return v; }
+uint8_t crc8(uint8_t*d,int n){ uint8_t c=0; for(int i=0;i<n;i++){uint8_t b=d[i]; for(int j=0;j<8;j++){uint8_t m=(c^b)&1;c>>=1;if(m)c^=0x8C;b>>=1;}} return c; }
 
-void ADXL_Init(void) {
-    // DATA_FORMAT = 0x0B -> full resolution, +/-16g range
-    ADXL_WriteReg(ADXL_DATA_FORMAT, 0x0B);
-    // POWER_CTL = 0x08 -> Measure bit set (exit standby)
-    ADXL_WriteReg(ADXL_POWER_CTL, 0x08);
+// start a conversion (non-blocking: don't wait here)
+void ds_start(void){
+    ds_present = ow_reset();
+    if(ds_present){ ow_wbyte(0xCC); ow_wbyte(0x44); }
 }
-
-void ADXL_ReadXYZ(int16_t *x, int16_t *y, int16_t *z) {
-    CS_LOW();
-    // read + multi-byte, starting at DATAX0: clocks out 6 bytes
-    SPI1_Transfer(ADXL_DATAX0 | ADXL_READ | ADXL_MB);
-    uint8_t x0 = SPI1_Transfer(0xFF);
-    uint8_t x1 = SPI1_Transfer(0xFF);
-    uint8_t y0 = SPI1_Transfer(0xFF);
-    uint8_t y1 = SPI1_Transfer(0xFF);
-    uint8_t z0 = SPI1_Transfer(0xFF);
-    uint8_t z1 = SPI1_Transfer(0xFF);
-    CS_HIGH();
-    // little-endian, signed 16-bit
-    *x = (int16_t)(((uint16_t)x1 << 8) | x0);
-    *y = (int16_t)(((uint16_t)y1 << 8) | y0);
-    *z = (int16_t)(((uint16_t)z1 << 8) | z0);
+// collect the result (call at least 750ms after ds_start)
+void ds_collect(void){
+    if(!ow_reset()){ ds_present=0; return; }
+    ds_present=1;
+    ow_wbyte(0xCC); ow_wbyte(0xBE);
+    uint8_t sp[9]; for(int i=0;i<9;i++) sp[i]=ow_rbyte();
+    if(crc8(sp,8)==sp[8]){
+        temp_raw=(int16_t)((sp[1]<<8)|sp[0]);
+        temperature_c=(float)temp_raw/16.0f;
+    }
 }
 
 // ============================================================================
 // MAIN
 // ============================================================================
-int main(void) {
-    // Heartbeat LED on PB0
-    RCC_AHB1ENR |= (1 << 1);
-    GPIOB_MODER &= ~(3 << (0 * 2));
-    GPIOB_MODER |=  (1 << (0 * 2));
+int main(void){
+    // Enable FPU (float math would HardFault otherwise)
+    *(volatile uint32_t*)0xE000ED88 |= (0xF << 20);
+    __asm volatile("dsb"); __asm volatile("isb");
 
+    // GPIOC for 1-Wire
+    RCC_AHB1ENR |= (1 << 2);
+    GPIOC_PUPDR &= ~(3u<<(OW_PIN*2)); GPIOC_PUPDR |= (1u<<(OW_PIN*2));
+    GPIOC_OTYPER |= (1u<<OW_PIN);
+    ow_rel();
+
+    us_timer_init();
     ADC1_Init();
-    I2C1_Init();
     SPI1_Init();
+    UART2_Init();
 
-    // --- ADXL bring-up: verify identity BEFORE trusting any data ---
-    adxl_devid = ADXL_ReadReg(ADXL_DEVID);   // must be 0xE5 (229)
+    adxl_devid = ADXL_R(ADXL_DEVID);   // expect 0xE5
     ADXL_Init();
 
-    while(1) {
+    uart_puts("PdM 4-sensor stream start\n");
 
-        // ---------- SCT current (ch0) ----------
-        uint32_t offset_sum = 0;
-        for (int i = 0; i < SAMPLES; i++) { offset_sum += ADC1_ReadChannel(0); delay(80); }
-        dc_offset = (float)offset_sum / SAMPLES;
+    // kick off first temperature conversion
+    ds_start();
 
-        double sum_sq = 0.0;
-        for (int i = 0; i < SAMPLES; i++) {
-            raw_adc = ADC1_ReadChannel(0);
-            float centered = (float)raw_adc - dc_offset;
-            sum_sq += (double)(centered * centered);
-            delay(80);
+    while(1){
+        // ---- SCT current (ch0) ----
+        uint32_t osum=0;
+        for(int i=0;i<SAMPLES;i++){ osum+=ADC1_Read(0); }
+        float dc=(float)osum/SAMPLES;
+        double ss=0;
+        for(int i=0;i<SAMPLES;i++){ float c=(float)ADC1_Read(0)-dc; ss+=(double)(c*c); }
+        float rms=sqrtf((float)(ss/SAMPLES));
+        current_rms = ((rms/4095.0f)*3.3f)*30.0f;   // change *30 to *20 or *10 if using that CT
+        if(rms<35.0f) current_rms=0.0f;
+
+        // ---- MAX4466 acoustic (ch1) ----
+        uint32_t mosum=0;
+        for(int i=0;i<MIC_SAMPLES;i++){ mosum+=ADC1_Read(1); }
+        float mdc=(float)mosum/MIC_SAMPLES;
+        double mss=0;
+        for(int i=0;i<MIC_SAMPLES;i++){ float c=(float)ADC1_Read(1)-mdc; mss+=(double)(c*c); }
+        acoustic_rms = sqrtf((float)(mss/MIC_SAMPLES));
+
+        // ---- ADXL345 vibration ----
+        double msum=0; float mags[VIB_SAMPLES];
+        for(int i=0;i<VIB_SAMPLES;i++){
+            ADXL_XYZ((int16_t*)&accel_x,(int16_t*)&accel_y,(int16_t*)&accel_z);
+            float m=sqrtf((float)((int32_t)accel_x*accel_x+(int32_t)accel_y*accel_y+(int32_t)accel_z*accel_z));
+            mags[i]=m; msum+=m;
         }
-        rms_counts = sqrtf((float)(sum_sq / SAMPLES));
-        current_rms = ((rms_counts / 4095.0f) * 3.3f) * 30.0f;
-        if (rms_counts < 35.0f) current_rms = 0.0f;
+        float mmean=(float)(msum/VIB_SAMPLES);
+        double vss=0;
+        for(int i=0;i<VIB_SAMPLES;i++){ float d=mags[i]-mmean; vss+=(double)(d*d); }
+        vibration_rms=sqrtf((float)(vss/VIB_SAMPLES));
 
-        // ---------- MAX4466 acoustic (ch1) ----------
-        uint32_t mic_offset_sum = 0;
-        for (int i = 0; i < MIC_SAMPLES; i++) { mic_offset_sum += ADC1_ReadChannel(1); }
-        mic_dc_offset = (float)mic_offset_sum / MIC_SAMPLES;
+        // ---- DS18B20: collect the conversion started last loop, then restart ----
+        // The 3 sensors above took time; the conversion has had time to finish.
+        ds_collect();
+        ds_start();
 
-        double mic_sum_sq = 0.0;
-        for (int i = 0; i < MIC_SAMPLES; i++) {
-            float c = (float)ADC1_ReadChannel(1) - mic_dc_offset;
-            mic_sum_sq += (double)(c * c);
-        }
-        acoustic_rms = sqrtf((float)(mic_sum_sq / MIC_SAMPLES));
-
-        // ---------- ADXL345 vibration ----------
-        // RMS of acceleration magnitude around gravity. At rest the magnitude
-        // is ~constant (1g); vibration makes it fluctuate. We remove the mean
-        // so the RMS reflects the AC fluctuation = vibration energy.
-        double mag_sum = 0.0, mag_sq_sum = 0.0;
-        float mags[VIB_SAMPLES];
-        for (int i = 0; i < VIB_SAMPLES; i++) {
-            ADXL_ReadXYZ((int16_t*)&accel_x, (int16_t*)&accel_y, (int16_t*)&accel_z);
-            float m = sqrtf((float)((int32_t)accel_x*accel_x
-                                  + (int32_t)accel_y*accel_y
-                                  + (int32_t)accel_z*accel_z));
-            mags[i] = m;
-            mag_sum += m;
-        }
-        float mag_mean = (float)(mag_sum / VIB_SAMPLES);
-        for (int i = 0; i < VIB_SAMPLES; i++) {
-            float d = mags[i] - mag_mean;
-            mag_sq_sum += (double)(d * d);
-        }
-        vibration_rms = sqrtf((float)(mag_sq_sum / VIB_SAMPLES));
-
-        // ---------- MLX90614 (parked) ----------
-        if (MLX_ReadTemp(MLX_TOBJ1, (uint16_t*)&mlx_raw) == 0) {
-            object_temp_c = ((float)mlx_raw * 0.02f) - 273.15f;
-        }
-
-        GPIOB_ODR ^= (1 << 0);   // heartbeat
+        // ---- STREAM all four ----
+        uart_putfloat(current_rms,2);   uart_putc(',');
+        uart_putfloat(vibration_rms,2); uart_putc(',');
+        uart_putfloat(acoustic_rms,1);  uart_putc(',');
+        uart_putfloat(temperature_c,2); uart_putc('\n');
     }
 }
