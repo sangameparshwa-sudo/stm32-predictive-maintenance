@@ -145,7 +145,7 @@ Final-year Electronics and Communication Engineering, Bangalore
 
 ## FIELD TESTING
 
-<img width="4000" height="3000" alt="20260817_103046" src="https://github.com/user-attachments/assets/870f5e52-83fe-4e18-a3d0-4983b60a7f90" />
+<img width="1448" height="1086" alt="ChatGPT Image Aug 17, 2026, 11_28_52 PM" src="https://github.com/user-attachments/assets/67ce2f30-db04-4ce9-8334-69cac69ba3f8" />
 <img width="4000" height="3000" alt="20260817_102723" src="https://github.com/user-attachments/assets/ced76c89-6784-407d-98e4-9d9a39d6ab6b" />
 <img width="1448" height="1086" alt="1" src="https://github.com/user-attachments/assets/474a14e5-3a5f-4187-90ca-029cf3dfd831" />
 <img width="1754" height="896" alt="ChatGPT Image Aug 17, 2026, 11_44_40 PM" src="https://github.com/user-attachments/assets/f94a89b5-bbcd-4a4b-9cfd-09ac8897eb7f" />
